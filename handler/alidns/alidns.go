@@ -120,6 +120,51 @@ func (d *AliDNS) GetDomainRecords(domain, rr string) []DomainRecord {
 	return nil
 }
 
+// AddDomainRecord add domain record
+func (d *AliDNS) AddDomainRecord(r DomainRecord) error {
+	parms := map[string]string{
+		"Action":     "AddDomainRecord",
+		"DomainName": r.DomainName,
+		"RR":         r.RR,
+		"Value":      r.Value,
+		"TTL":        strconv.Itoa(r.TTL),
+		"Line":       r.Line,
+	}
+
+	if d.IPType == "" || strings.ToUpper(d.IPType) == godns.IPV4 {
+		parms["Type"] = godns.IPTypeA
+	} else if strings.ToUpper(d.IPType) == godns.IPV6 {
+		parms["Type"] = godns.IPTypeAAAA
+	}
+
+	urlPath := d.genRequestURL(parms)
+	if urlPath == "" {
+		return errors.New("failed to generate request URL")
+	}
+	_, err := getHTTPBody(urlPath)
+	if err != nil {
+		fmt.Printf("AddDomainRecord error.%+v\n", err)
+	}
+	return err
+}
+
+// DeleteDomainRecord updates domain record
+func (d *AliDNS) DeleteDomainRecord(r DomainRecord) error {
+	parms := map[string]string{
+		"Action":   "DeleteDomainRecord",
+		"RecordId": r.RecordID,
+	}
+	urlPath := d.genRequestURL(parms)
+	if urlPath == "" {
+		return errors.New("failed to generate request URL")
+	}
+	_, err := getHTTPBody(urlPath)
+	if err != nil {
+		fmt.Printf("DeleteDomainRecord error.%+v\n", err)
+	}
+	return err
+}
+
 // UpdateDomainRecord updates domain record
 func (d *AliDNS) UpdateDomainRecord(r DomainRecord) error {
 	parms := map[string]string{

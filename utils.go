@@ -81,6 +81,10 @@ const (
 	IPPattern = "(" + IPv4Pattern + ")|(" + IPv6Pattern + ")"
 )
 
+func ArrayRemoveItem(s *[]string, index int) {
+	*s = append((*s)[:index], (*s)[index+1:]...)
+}
+
 //GetIPFromInterface gets IP address from the specific interface
 func GetIPFromInterface(configuration *Settings) (string, error) {
 	ifaces, err := net.InterfaceByName(configuration.IPInterface)

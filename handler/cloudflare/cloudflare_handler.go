@@ -3,6 +3,7 @@ package cloudflare
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -99,15 +100,56 @@ func (handler *Handler) DomainLoop(domain *godns.Domain, panicChan chan<- godns.
 		if currentIP == lastIP {
 			log.Infof("IP is the same as cached one (%s). Skip update.\n", currentIP)
 		} else {
-			log.Info("Checking IP for domain", domain.DomainName)
+			log.Info("Checking IP for domain ", domain.DomainName)
 			zoneID := handler.getZone(domain.DomainName)
 			if zoneID != "" {
 				records := handler.getDNSRecords(zoneID)
 
-				// update records
+				// add records
+				for _, subDomain := range domain.SubDomains {
+					if subDomain[0] == '-' {
+						continue
+					}
+					if !subDomainTracked(subDomain, domain.DomainName, &records) {
+						sd := fmt.Sprintf("%s.%s", subDomain, domain.DomainName)
+						newRecord := DNSRecord{
+							Type:    "A",
+							Name:    sd,
+							IP:      currentIP,
+							TTL:     1,
+							Proxied: true,
+							ZoneID:  zoneID,
+						}
+						if err := handler.addRecord(newRecord); err != nil {
+							log.Infof("Failed to update IP for subdomain:%s\r\n", subDomain)
+						} else {
+							log.Infof("Record added for subdomain:%s\r\n", subDomain)
+						}
+					}
+				}
+
+				// update or delete records
 				for _, rec := range records {
-					if !recordTracked(domain, &rec) {
+
+					tracked, del := recordTracked(domain, &rec)
+					if !tracked {
 						log.Debug("Skiping record:", rec.Name)
+						continue
+					}
+					if del {
+						if handler.deleteRecord(rec) == nil {
+							log.Infof("Record Deleted: %s\r\n", rec.Name)
+							for index, subDomain := range domain.SubDomains {
+								if subDomain[0] == '-' {
+									subDomain = strings.TrimLeft(subDomain, "-")
+								}
+								sd := fmt.Sprintf("%s.%s", subDomain, domain.DomainName)
+								if rec.Name == sd || (subDomain == godns.RootDomain && rec.Name == domain.DomainName) {
+									godns.ArrayRemoveItem(&domain.SubDomains, index)
+									break
+								}
+							}
+						}
 						continue
 					}
 					if rec.IP != currentIP {
@@ -128,12 +170,31 @@ func (handler *Handler) DomainLoop(domain *godns.Domain, panicChan chan<- godns.
 }
 
 // Check if record is present in domain conf
-func recordTracked(domain *godns.Domain, record *DNSRecord) bool {
+func recordTracked(domain *godns.Domain, record *DNSRecord) (bool, bool) {
+	del := false
 	for _, subDomain := range domain.SubDomains {
+		if subDomain[0] == '-' {
+			del = true
+			subDomain = strings.TrimLeft(subDomain, "-")
+		}
 		sd := fmt.Sprintf("%s.%s", subDomain, domain.DomainName)
 		if record.Name == sd {
-			return true
+			return true, del
 		} else if subDomain == godns.RootDomain && record.Name == domain.DomainName {
+			return true, del
+		}
+	}
+
+	return false, del
+}
+
+// Check if subDomain is present in records
+func subDomainTracked(subDomain string, domainName string, records *[]DNSRecord) bool {
+	sd := fmt.Sprintf("%s.%s", subDomain, domainName)
+	for _, rec := range *records {
+		if rec.Name == sd {
+			return true
+		} else if subDomain == godns.RootDomain && rec.Name == domainName {
 			return true
 		}
 	}
@@ -228,6 +289,73 @@ func (handler *Handler) getDNSRecords(zoneID string) []DNSRecord {
 
 	}
 	return r.Records
+}
+
+// Add DNS A Record
+func (handler *Handler) addRecord(record DNSRecord) error {
+	var r DNSRecordUpdateResponse
+
+	j, _ := json.Marshal(record)
+	req, client := handler.newRequest("POST",
+		"/zones/"+record.ZoneID+"/dns_records",
+		bytes.NewBuffer(j),
+	)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error("Request error:", err)
+		return err
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	err = json.Unmarshal(body, &r)
+	if err != nil {
+		log.Errorf("Decoder error: %+v\n", err)
+		log.Debugf("Response body: %+v\n", string(body))
+		return err
+	}
+	if !r.Success {
+		body, _ := ioutil.ReadAll(resp.Body)
+		log.Infof("Response failed: %+v \n", string(body))
+		return errors.New("Failed")
+	} else {
+		log.Infof("Record updated: %+v - %+v", record.Name, record.IP)
+	}
+
+	return nil
+}
+
+// Delete DNS A Record
+func (handler *Handler) deleteRecord(record DNSRecord) error {
+	var r DNSRecordUpdateResponse
+
+	j, _ := json.Marshal(record)
+	req, client := handler.newRequest("DELETE",
+		"/zones/"+record.ZoneID+"/dns_records/"+record.ID,
+		bytes.NewBuffer(j),
+	)
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error("Request error:", err)
+		return err
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	err = json.Unmarshal(body, &r)
+	if err != nil {
+		log.Errorf("Decoder error: %+v\n", err)
+		log.Debugf("Response body: %+v\n", string(body))
+		return err
+	}
+	if !r.Success {
+		body, _ := ioutil.ReadAll(resp.Body)
+		log.Infof("Response failed: %+v\n", string(body))
+		return errors.New("Failed")
+	} else {
+		log.Infof("Record updated: %+v - %+v", record.Name, record.IP)
+	}
+
+	return nil
 }
 
 // Update DNS A Record with new IP

@@ -3,6 +3,7 @@ package alidns
 import (
 	"fmt"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -49,7 +50,20 @@ func (handler *Handler) DomainLoop(domain *godns.Domain, panicChan chan<- godns.
 			continue
 		}
 		log.Debug("currentIP is:", currentIP)
-		for _, subDomain := range domain.SubDomains {
+		for index := 0; index < len(domain.SubDomains); index++ {
+			subDomain := domain.SubDomains[index]
+			if subDomain[0] == '-' {
+				// delete record
+				records := aliDNS.GetDomainRecords(domain.DomainName, strings.TrimLeft(subDomain, "-"))
+				if len(records) != 0 && aliDNS.DeleteDomainRecord(records[0]) == nil {
+					log.Infof("Record Deleted: %s.%s\r\n", subDomain, domain.DomainName)
+					godns.ArrayRemoveItem(&domain.SubDomains, index)
+					index--
+				}
+				continue
+			}
+
+			// add or update record
 			var hostname string
 			if subDomain != godns.RootDomain {
 				hostname = subDomain + "." + domain.DomainName
@@ -59,6 +73,21 @@ func (handler *Handler) DomainLoop(domain *godns.Domain, panicChan chan<- godns.
 
 			lastIP, err := godns.ResolveDNS(hostname, handler.Configuration.Resolver, handler.Configuration.IPType)
 			if err != nil {
+				if err.Error() == "NXDOMAIN" {
+					newRecord := DomainRecord{
+						DomainName: domain.DomainName,
+						RR:         subDomain,
+						Value:      currentIP,
+						TTL:        600,
+						Line:       "default",
+					}
+					if err := aliDNS.AddDomainRecord(newRecord); err != nil {
+						log.Infof("Failed to add record for subdomain:%s\r\n", subDomain)
+					} else {
+						log.Infof("Record added for subdomain:%s\r\n", subDomain)
+					}
+					continue
+				}
 				log.Error(err)
 				continue
 			}
